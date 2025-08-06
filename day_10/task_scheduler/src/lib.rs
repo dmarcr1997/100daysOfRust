@@ -1,69 +1,15 @@
-use std::collections::VecDeque;
-
-#[derive(Debug, PartialEq)]
-enum JobStatus {
-    Pending,
-    Running,
-    Done,
-    Cancelled
-}
-struct Job {
-    id: u32,
-    priority: u8,
-    status: JobStatus,
-    task: Box<dyn FnOnce() + Send>,
-}
-
-impl Job {
-    pub fn new(id: u32, priority: u8, task: Box<dyn FnOnce() + Send>) -> Self {
-        Job {
-            id,
-            priority,
-            status: JobStatus::Pending,
-            task,
-        }
-    }
-    pub fn run(&mut self) {
-        if self.status == JobStatus::Pending {
-            self.status = JobStatus::Running;
-            let task = std::mem::replace(&mut self.task, Box::new(|| {}));
-            task();
-            self.status = JobStatus::Done;
-        }
-    }
-}
-
-struct JobQueue {
-    queue: VecDeque<Job>,
-}
-
-impl JobQueue {
-    pub fn new() -> Self {
-        JobQueue {queue: VecDeque::new()}
-    }
-
-    pub fn push(&mut self, job: Job) {
-        self.queue.push_back(job);
-    }
-
-    pub fn pop(&mut self) -> Option<Job> {
-        if self.queue.is_empty() {
-            return None;
-        }
-        
-        let idx = self.queue
-            .iter()
-            .enumerate()
-            .max_by_key(|(_, job)| job.priority)
-            .map(|(i, _)| i)?;
-        Some(self.queue.remove(idx).unwrap())
-    }
-}
+mod job;
+mod worker;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::thread;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use crate::job::{JobQueue, JobStatus, Job};
+    use crate::worker::WorkerPool;
+    use std::io::{self, Write};
 
     #[test]
     fn test_job_creation() {
@@ -103,5 +49,21 @@ mod tests {
         job.run();
         assert_eq!(job.status, JobStatus::Done);
         assert_eq!(*ran.lock().unwrap(), true);
+    }
+
+    #[test]
+    fn test_job_executes_in_worker() {
+        let pool = WorkerPool::new(2);
+        let result = Arc::new(Mutex::new(0));
+        let result_clone = Arc::clone(&result);
+
+        let job = Job::new(1, 5, Box::new(move || {
+            *result_clone.lock().unwrap() = 42;
+        }));
+
+        pool.submit(job);
+
+        thread::sleep(Duration::from_millis(500));
+        assert_eq!(*result.lock().unwrap(), 42);
     }
 }
